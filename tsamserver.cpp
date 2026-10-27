@@ -268,11 +268,11 @@ bool handleClient(Server& s, int fd) {
 
 // The event loop, runs until poll() fails with non recoverable error
 void runServer(Server& s, int listenSock, int port) {
-    server.myPort = port;
-    server.fds.push_back({listenSock, POLLIN, 0}); // index 0: listener
+    s.myPort = port;
+    s.fds.push_back({listenSock, POLLIN, 0}); // index 0: listener
 
     while (true) {
-        int ready = poll(server.fds.data(), server.fds.size(), -1); // block until something happens
+        int ready = poll(s.fds.data(), s.fds.size(), -1); // block until something happens
         if (ready < 0) {
             if (errno == EINTR) {
                 continue; // interrupted by a signal, not an error
@@ -282,26 +282,26 @@ void runServer(Server& s, int listenSock, int port) {
             }
         }
 
-        for(size_t i = 0; i < server.fds.size(); i++) {
+        for(size_t i = 0; i < s.fds.size(); i++) {
             // Any events counts, not just POLLIN, and if an event is ignored
             // poll() would return for them again immediately, (busy loop)
             // and recv() then reports the problem
-            if (server.fds[i].revents == 0) continue; 
+            if (s.fds[i].revents == 0) continue; 
 
-            if (server.fds[i].fd == listenSock) {
-                acceptClient(server, server.fds[i].fd);
+            if (s.fds[i].fd == listenSock) {
+                acceptClient(s, s.fds[i].fd);
             } else {
-                int fd = server.fds[i].fd;
-                if (!handleClient(server, fd)) {
+                int fd = s.fds[i].fd;
+                if (!handleClient(s, fd)) {
                     close(fd);
-                    server.clients.erase(fd); // erase too, or a refused fd number inherits old bytes
-                    server.fds[i].fd = -1; // mark only: erasing while iterating would skip entries
+                    s.clients.erase(fd); // erase too, or a refused fd number inherits old bytes
+                    s.fds[i].fd = -1; // mark only: erasing while iterating would skip entries
                 }
             }
         }
         // Remove the entries marked above, after the loop finishes running
-        auto newFds = std::remove_if(server.fds.begin(), server.fds.end(), [](const pollfd& p) {return p.fd == -1;});
-        server.fds.erase(newFds, server.fds.end());
+        auto newFds = std::remove_if(s.fds.begin(), s.fds.end(), [](const pollfd& p) {return p.fd == -1;});
+        s.fds.erase(newFds, s.fds.end());
     }
 
 }
