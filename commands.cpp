@@ -18,34 +18,6 @@ std::string handleStatusReq(const Mailbox& mailbox) {
     return result;
 }
 
-// SENDMSG,from,to,message
-// only the first two commas separate the fields, message may contain a comma
-// empty messages are also allowed
-static std::string handleSendMsg(const std::string& args, Mailbox& mailbox) {
-    size_t c1 = args.find(','); // end of from
-    if (c1 == std::string::npos) {
-        return "ERROR, missing fields";
-    }
-    size_t c2 = args.find(',', c1 + 1); // end of to
-    if (c2 == std::string::npos) {
-        return "ERROR, missing fields";
-    }
-
-    // cut the message up
-    std::string sender = args.substr(0, c1); // from the start to first comma
-    std::string receiver = args.substr(c1 + 1, c2 - c1 - 1); // between the commas
-    std::string text = args.substr(c2 + 1); // everything else
-
-    // validate
-    if (sender.empty() || receiver.empty()) {
-        return "ERROR, empty field";
-    }
-
-    // store message if complete
-    mailbox[receiver].push_back({sender, text});
-    return "OK";
-}
-
 // GETMSG,user
 // returns the oldest message, then it gets deleted
 // or none if there are no messages
@@ -77,7 +49,6 @@ std::string handleCommand(const std::string& cmd, Mailbox& mailbox) {
     std::string args = (comma == std::string::npos) ? "" : cmd.substr(comma + 1);
 
     if (name == "STATUSREQ") return handleStatusReq(mailbox); // extra args are ignored
-    else if (name == "SENDMSG") return handleSendMsg(args, mailbox);
     else if (name == "GETMSG") return handleGetMsg(args, mailbox); 
     else return "ERROR, unknown command";
 }

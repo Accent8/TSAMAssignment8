@@ -8,6 +8,8 @@
 // this messages lives in
 struct Message {
     std::string from;
+    std::string to;
+    time_t created; // from the SENDMSG, passed on unchanged
     std::string text;
 };
 

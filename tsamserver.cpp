@@ -22,6 +22,7 @@
 
 // Per connection state
 enum class Role { UNKNOWN, CLIENT, SERVER};
+
 struct Connection {
     std::string buffer, ip, groupID; 
     int port;
@@ -176,12 +177,20 @@ void parseServersList(Server& s, int fd, const std::string& args) {
             log_note("%s listens on port %d", c.groupID.c_str(), port);
             continue;
         }
+
         if (s.known.count(fields[0]) == 0 && s.known.size() >= 200) {
             log_note("known-servers list full, ignoring %s", fields[0].c_str());
             continue;
         }
-        log_note("%s says %s is at %s:%d", c.groupID.c_str(), fields[0].c_str(),
+
+        auto it = s.known.find(fields[0]);
+        if (it == s.known.end()) {
+            log_note("%s says %s is at %s:%d", c.groupID.c_str(), fields[0].c_str(),
             fields[1].c_str(), port);
+        } else if (it->second.ip != fields[1] || it->second.port != port) {
+            log_note("%s says %s moved from %s:%d to %s:%d", c.groupID.c_str(), fields[0].c_str(),
+             it->second.ip.c_str(), it->second.port, fields[1].c_str(), port);
+        }
         s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL)};
     }
 }
@@ -264,9 +273,9 @@ bool handleClientSendMsg(Server&s, int fd, std::string cmd) {
     if (to.empty()) {
         return sendTo(s, fd, "ERROR, empty field");
     }
-
+    time_t now = time(NULL);
     std::string out = "SENDMSG," GROUP_ID "," + to + "," + 
-    std::to_string(time(NULL)) + "," + text;
+    std::to_string(now) + "," + text;
     
     int peerFD = -1;
     for (const auto& [cfd, c] : s.connections) {
@@ -282,7 +291,7 @@ bool handleClientSendMsg(Server&s, int fd, std::string cmd) {
         } 
     } else {
         // TODO: fix missing timestamp
-        s.mailbox[to].push_back({GROUP_ID, text});
+        s.mailbox[to].push_back({GROUP_ID, to, now, text});
         log_note("no direct connection to %s, holding message", to.c_str());
     }
 
@@ -350,7 +359,8 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
             return true;
         }
         if (n < 0) {
-            log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "bad KEEPALIVE count: " + n);
+            log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), ("bad KEEPALIVE count: " + args).c_str());
+            return true;
         }
         c.waiting = n;
         log_note("%s holds %d messages for us", c.groupID.c_str(), c.waiting);
