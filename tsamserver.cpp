@@ -17,10 +17,12 @@
 #include "commands.h"
 #include "log_event.h"
 #include "identity.h"
+#include <ctime>
+#include <sstream>
 
 // Per connection state
 enum class Role { UNKNOWN, CLIENT, SERVER};
-struct Client {
+struct Connection {
     std::string buffer, ip, groupID; 
     int port;
     int listenPort = -1; // where peer accepts connections (for SERVERS)
@@ -29,16 +31,35 @@ struct Client {
     bool heloSent = false; // so we never send HELO twice
 };
 
+struct KnownServer {
+    std::string ip;
+    int port;
+    std::string heardFrom; // who told us
+    time_t lastSeen;
+};
+
 struct Server {
     std::vector<pollfd> fds;
-    std::map<int, Client> clients;
+    std::map<int, Connection> connections;
+    std::map<std::string, KnownServer> known;
     Mailbox mailbox;
     int myPort;
 };
 
-std::string buildServersList(const Server& s) {
+std::string localIP(int fd) {
+    sockaddr_in local{};
+    socklen_t len = sizeof(local);
+    getsockname(fd, (sockaddr*)&local, &len);
+    char ip [INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &local.sin_addr, ip, sizeof(ip));
+    return ip;
+}
+
+std::string buildServersList(const Server& s, int fd) {
+    std::string ip = localIP(fd);
     std::string list;
-    for (const auto& [fd, c] : s.clients) {
+    list.append(std::string(GROUP_ID) + ',' + ip + "," + std::to_string(s.myPort) + ';');
+    for (const auto& [cfd, c] : s.connections) {
         if (c.role != Role::SERVER) {
             continue;
         }
@@ -48,7 +69,8 @@ std::string buildServersList(const Server& s) {
         if (c.listenPort == -1) {
             continue;
         }
-        list.append(c.groupID + ',' + c.ip + ',' + std::to_string(c.listenPort) + ';');
+        list.append(c.groupID + ',' + c.ip + ',' + 
+        std::to_string(c.listenPort) + ';');
     }
     return list;
 }
@@ -97,11 +119,62 @@ bool sendTo(Server& s, int fd, const std::string& payload) {
     }
     bool status = sendMsg(fd, msg);
     if (status) {
-        log_event_bytes("SEND", s.clients[fd].ip.c_str(), s.clients[fd].port, 
-            s.clients[fd].groupID.c_str(), payload.c_str(), payload.length());
+        log_event_bytes("SEND", s.connections[fd].ip.c_str(), s.connections[fd].port, 
+            s.connections[fd].groupID.c_str(), payload.c_str(), payload.length());
         return status;
     }
     return status;
+}
+
+void parseServersList(Server& s, int fd, const std::string& args) {
+    Connection& c = s.connections[fd];
+
+    std::stringstream entries(args);
+    std::string entry;
+    while (std::getline(entries, entry, ';')) { // One "ID,IP,PORT" at a time
+        if (entry.empty()) continue;
+        std::vector<std::string> fields;
+        std::stringstream parts(entry);
+        std::string field;
+        while (std::getline(parts, field, ',')) {
+            fields.push_back(field);
+        }
+        if (fields.size() != 3) {
+            log_note("Incorrect amount of fields, got %zu expected 3. Skipping...", fields.size());
+            continue;
+        }
+        int port;
+        try {
+            size_t used = 0;
+            port = std::stoi(fields[2], &used);
+            if (used != fields[2].size()) {
+                throw std::invalid_argument("trailing junk");
+            } 
+        } catch (const std::exception&) {
+            log_note("Bad port in SERVERS entry from %s: %s", c.groupID.c_str(), entry.c_str());
+            continue;
+        }
+
+        if (port < 1 || port > 65535) {
+            log_note("Port number out of range from %s: %s! skipping...", c.groupID.c_str(), entry.c_str());
+            continue;
+        }
+        if (fields[0] == GROUP_ID) { // is it us?
+            continue;
+        }
+        if (fields[0] == c.groupID) { // is it the sender?
+            c.listenPort = port;
+            s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL)};
+            log_note("%s listens on port %d", c.groupID.c_str(), port);
+        }
+        log_note("%s says %s is at %s:%d", c.groupID.c_str(), fields[0].c_str(),
+            fields[1].c_str(), port);
+        if (s.known.count(fields[0]) == 0 && s.known.size() >= 200) {
+            log_note("known-servers list full, ignoring %s", fields[0].c_str());
+            continue;
+        }
+        s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL)};
+    }
 }
 
 // Accepts one pending connection, starts polling it and registers it in clients
@@ -122,10 +195,11 @@ void acceptClient(Server& s, int listenSock) {
     // revents starts at 0, so if this push happens during runServers loop
     // the new entry is skipped this round and picked up next poll()
     s.fds.push_back({fd, POLLIN, 0});
-    s.clients[fd].ip = ip;
-    s.clients[fd].port = port;
-    s.clients[fd].role = Role::UNKNOWN;
-    log_event("ACCEPT", ip, port, NULL, NULL);
+    Connection& c = s.connections[fd];
+    c.ip = ip;
+    c.port = port;
+    c.role = Role::UNKNOWN;
+    log_event("ACCEPT", ip, port, c.groupID.c_str(), NULL);
 }
 
 int connectToPeer(Server& s, std::string ip, int port) {
@@ -151,18 +225,65 @@ int connectToPeer(Server& s, std::string ip, int port) {
     }
 
     s.fds.push_back({fd, POLLIN, 0});
-    s.clients[fd].ip = ip;
-    s.clients[fd].port = port;
-    s.clients[fd].role = Role::SERVER;
-    s.clients[fd].outgoing = true;
-    s.clients[fd].listenPort = port;
+    Connection& c = s.connections[fd];
+    c.ip = ip;
+    c.port = port;
+    c.role = Role::SERVER;
+    c.outgoing = true;
+    c.listenPort = port;
     log_event("CONN", ip.c_str(), port, NULL, "Successful connection to peer");
     sendTo(s, fd, "HELO," GROUP_ID);
-    s.clients[fd].heloSent = true;
+    c.heloSent = true;
     return fd;
 }
 
+bool handleClientSendMsg(Server&s, int fd, std::string cmd) {
+    size_t c1 = cmd.find(','); // end of from
+    if (c1 == std::string::npos) {
+        return sendTo(s, fd, "ERROR, missing fields");
+    }
+    size_t c2 = cmd.find(',', c1 + 1); // end of to
+    if (c2 == std::string::npos) {
+        return sendTo(s, fd, "ERROR, missing fields");
+    }
+    // cut the message up
+    // from always ignored, use GROUP_ID instead
+    std::string from = cmd.substr(0, c1); // from the start to first comma
+    std::string to = cmd.substr(c1 + 1, c2 - c1 - 1); // between the commas
+    std::string text = cmd.substr(c2 + 1); // everything else
+
+    if (to.empty()) {
+        return sendTo(s, fd, "ERROR, empty field");
+    }
+
+    std::string out = "SENDMSG," GROUP_ID "," + to + "," + 
+    std::to_string(time(NULL)) + "," + text;
+    
+    int peerFD = -1;
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.role == Role::SERVER && c.groupID == to) {
+            peerFD = cfd;
+            break;
+        }
+    }
+        
+    if (peerFD != -1) {
+        if (!sendTo(s, peerFD, out)) {
+            log_note("Sending to %s failed", to.c_str());
+        } 
+    } else {
+        // TODO: fix missing timestamp
+        s.mailbox[to].push_back({GROUP_ID, text});
+        log_note("no direct connection to %s, holding message", to.c_str());
+    }
+
+    return sendTo(s, fd, "OK");
+}
+
 bool handleClientCommand(Server& s, int fd, std::string& cmd) {
+    if (cmd.rfind("SENDMSG,", 0) == 0) {
+        return handleClientSendMsg(s, fd, cmd.substr(8)); // 8 = strlen("SENDMSG,")
+    }
     std::string response = handleCommand(cmd, s.mailbox);
     if (response.size() + FRAME_OVERHEAD > MAX_FRAME) {
         log_note("ERROR, response too large");
@@ -172,7 +293,7 @@ bool handleClientCommand(Server& s, int fd, std::string& cmd) {
 }
 
 bool handleServerCommand(Server& s, int fd, std::string& cmd) {
-    Client& c = s.clients[fd];
+    Connection& c = s.connections[fd];
     size_t comma = cmd.find(',');
     std::string name = cmd.substr(0, comma);
     std::string args = (comma == std::string::npos) ? "" : cmd.substr(comma + 1);
@@ -184,14 +305,13 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
         }
         if (c.groupID.empty()) {
             c.groupID = args;
-            log_note("Adding groupID: %s to client: %s", args.c_str(), c.ip.c_str());
+            log_note("Adding groupID: %s to client: %s:%d", args.c_str(), 
+            c.ip.c_str(), c.port);
         } else {
-            log_note("Client: %s already has a groupID set: %s", c.ip.c_str(), c.groupID.c_str());
+            log_note("%s:%d already has a groupID set: %s", c.ip.c_str(),
+             c.port, c.groupID.c_str());
         }
-        bool status = sendTo(s, fd, "SERVERS," + buildServersList(s));
-        if (status == false) {
-            return false;
-        }
+
         if (!c.heloSent) {
             if (sendTo(s, fd, "HELO," GROUP_ID)) {
                 c.heloSent = true;
@@ -199,10 +319,16 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
                 return false;
             }
         }
+
+        bool status = sendTo(s, fd, "SERVERS," + buildServersList(s, fd));
+        if (status == false) {
+            return false;
+        }
        return true;
     }
     if (name == "SERVERS") {
         log_note("SERVERS from %s: %s", c.groupID.c_str(), args.c_str());
+        parseServersList(s, fd, args);
         return true;
     }
 
@@ -215,7 +341,7 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
 // Returns false if the client should be closed (disconnect or error)
 // closing is left to runServer, which owns the fd list
 bool handleClient(Server& s, int fd) {
-    Client& c = s.clients[fd];
+    Connection& c = s.connections[fd];
     char buff[2048];
     ssize_t n = recv(fd, buff, sizeof(buff), 0); // wont block, poll said its ready
     if (n == 0) {
@@ -294,7 +420,7 @@ void runServer(Server& s, int listenSock, int port) {
                 int fd = s.fds[i].fd;
                 if (!handleClient(s, fd)) {
                     close(fd);
-                    s.clients.erase(fd); // erase too, or a refused fd number inherits old bytes
+                    s.connections.erase(fd); // erase too, or a refused fd number inherits old bytes
                     s.fds[i].fd = -1; // mark only: erasing while iterating would skip entries
                 }
             }
@@ -303,11 +429,10 @@ void runServer(Server& s, int listenSock, int port) {
         auto newFds = std::remove_if(s.fds.begin(), s.fds.end(), [](const pollfd& p) {return p.fd == -1;});
         s.fds.erase(newFds, s.fds.end());
     }
-
 }
 
 int main(int argc, char* argv[]){
-    if (argc != 2 or argc != 4) {
+    if (argc != 2 && argc != 4) {
         std::cerr << "incorrect amount of args" << std::endl;
         std::cerr << "Usage: " << argv[0] << " <port>" << std::endl;
         std::cerr << "OR" << std::endl;

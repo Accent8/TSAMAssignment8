@@ -3,3 +3,4 @@ sender.py
 __MACOSX/
 tsamclient
 tsamserver
+server.log
