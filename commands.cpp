@@ -2,7 +2,7 @@
 
 // STATUSREQ: "user1:count1,user2:count2,..." or "EMPTY"
 // format was given in assignment: no spaces, no trailing comma
-static std::string handleStatusReq(const Mailbox& mailbox) {
+std::string handleStatusReq(const Mailbox& mailbox) {
     if (mailbox.empty()) {
         return "EMPTY";
     }

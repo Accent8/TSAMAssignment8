@@ -18,3 +18,4 @@ using Mailbox = std::map<std::string, std::deque<Message>>;
 // supported commands: SENDMSG,GETMSG,STATUSREQ
 // errors are returned: "ERROR, reason"
 std::string handleCommand(const std::string& cmd, Mailbox& mailbox);
+std::string handleStatusReq(const Mailbox& mailbox);
