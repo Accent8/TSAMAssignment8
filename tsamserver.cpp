@@ -84,7 +84,7 @@ std::string localIP(int fd) {
     return ip;
 }
 
-std::string buildServersList(const Server& s, int fd) {
+std::string buildServersList(const Server& s) {
     std::string list;
     list.append(std::string(GROUP_ID) + ',' + s.myIp + "," + std::to_string(s.myPort) + ';');
     for (const auto& [cfd, c] : s.connections) {
@@ -291,6 +291,28 @@ int findPeer(const Server& s, const std::string& groupId) {
     return -1;
 }
 
+bool deliverHeld(Server&s, int fd, const std::string& group) {
+    auto entry = s.mailbox.find(group); // retrive the messages for group
+    if (entry == s.mailbox.end()) {
+        log_note("nothing held for %s", group.c_str());
+        return true;
+    }
+
+    std::deque<Message>& queue = entry->second;
+    int sent = 0;
+    while (!queue.empty()) {
+        if (sendTo(s, fd, toSendMsg(queue.front()))) {
+            queue.pop_front();
+            sent++;
+        } else {
+            return false;
+        }
+    }
+    s.mailbox.erase(entry);
+    log_note("delivered %d held messages to %s", sent, group.c_str());
+    return true;
+}
+
 // Rebuilds the SENDMSG command from a stored message
 std::string toSendMsg(const Message& m) {
     return "SENDMSG," + m.from + "," + m.to + "," + std::to_string(m.created)
@@ -410,14 +432,14 @@ bool handleServerSendMsg(Server&s, int fd, const std::string& args) {
     }
     
     int peerFD = findPeer(s, to);
-    if (peerFD != -1 && peerFD != fd) {
+    if (peerFD != -1) {
         if (sendTo(s, peerFD, "SENDMSG," + args)) {
             log_note("forwarded message from %s to %s", from.c_str(), to.c_str());
             return true;
         }
         log_note("forwarding to %s failed, holding instead", to.c_str());
     }
-    // not connected would loop back or sending failed so we hold
+
     s.mailbox[to].push_back({from, to, created, text});
     log_note("holding message from %s for %s", from.c_str(), to.c_str());
     return true;
@@ -433,29 +455,47 @@ bool handleServerGetMsgs(Server&s, int fd, const std::string& group) {
         return true;
     }
     if (group != c.groupID) {
-        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "group ids dont match, dropping...");
-        log_note("%s tried to retrieve messages for %s", c.groupID.c_str(), group.c_str());
+        log_note("%s is collecting mail for: %s", c.groupID.c_str(), group.c_str());
+    }
+    return deliverHeld(s, fd, group);
+}
+
+bool handleServerStatusResp(Server& s, int fd,  const std::string& args) {
+    Connection& c = s.connections[fd];
+    if (args == "EMPTY") {
         return true;
     }
 
-    auto entry = s.mailbox.find(group); // retrive the messages for group
-    if (entry == s.mailbox.end()) {
-        log_note("nothing held for %s", group.c_str());
-        return true;
-    }
-
-    std::deque<Message>& queue = entry->second;
-    int sent = 0;
-    while (!queue.empty()) {
-        if (sendTo(s, fd, toSendMsg(queue.front()))) {
-            queue.pop_front();
-            sent++;
-        } else {
-            return false;
+    std::stringstream entries(args);
+    std::string entry;
+    while (std::getline(entries, entry, ',')) {
+        size_t colon = entry.find(':');
+        if (colon == std::string::npos || colon == 0) {
+            log_note("bad entry from %s: %s", c.groupID.c_str(), entry.c_str());
+            continue;
         }
+        std::string name = entry.substr(0, colon);
+        std::string countStr = entry.substr(colon + 1);
+        int count;
+        if (!parseInt(countStr, count)) {
+            log_note("invalid count from %s: %s", c.groupID.c_str(), entry.c_str());
+            continue;
+        }
+        if (count == 0) continue;
+        if (count <= 0) {
+            log_note("bad STATUSRESP entry from %s: %s", c.groupID.c_str(), entry.c_str());
+            continue;
+        }
+        bool forUs = (name == GROUP_ID);
+        bool forNeighbour = (name != c.groupID && findPeer(s, name) != -1);
+        if (!forUs && !forNeighbour) {
+            continue;
+        }
+        if (!sendTo(s, fd, "GETMSGS," + name)) {
+            return false; // connection dead
+        }
+        log_note("%s holds %d messages for %s, fetching them", c.groupID.c_str(), count, name.c_str());
     }
-    s.mailbox.erase(entry);
-    log_note("delivered %d held messages to %s", sent, group.c_str());
     return true;
 }
 
@@ -467,7 +507,7 @@ bool handleClientCommand(Server& s, int fd, std::string& cmd) {
         return handleClientConnect(s, fd, cmd.substr(8)); // 8 = strlen("Connect",)
     }
     std::string response = handleCommand(cmd, s.mailbox);
-    if (response.size() + FRAME_OVERHEAD > MAX_FRAME) {
+    if (response.size() + FRAME_OVERHEAD > MAX_FRAME + FRAME_OVERHEAD) {
         log_note("ERROR, response too large");
         response = "ERROR, response too large";
     }
@@ -502,11 +542,10 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
             }
         }
 
-        bool status = sendTo(s, fd, "SERVERS," + buildServersList(s, fd));
-        if (status == false) {
+        if (!sendTo(s, fd, "SERVERS," + buildServersList(s))) {
             return false;
         }
-       return true;
+        return deliverHeld(s, fd, c.groupID);
     }
     if (name == "SERVERS") {
         log_note("SERVERS from %s: %s", c.groupID.c_str(), args.c_str());
@@ -538,6 +577,9 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
     }
     if (name == "GETMSGS") {
         return handleServerGetMsgs(s, fd, args);
+    }
+    if (name == "STATUSRESP") {
+        return handleServerStatusResp(s, fd, args);
     }
     log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), ("Unhandled command: " + name).c_str());
     return true;

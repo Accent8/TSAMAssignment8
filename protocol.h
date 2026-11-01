@@ -6,9 +6,10 @@
 constexpr char SOH = 0x01; // start of header
 constexpr char STX = 0x02; // start of text
 constexpr char ETX = 0x03; // end of text
-constexpr size_t MAX_FRAME = 5000; // largest frame we accept or send
 constexpr size_t HEADER_SIZE = 4; // SOH + 2 length bytes + STX
 constexpr size_t FRAME_OVERHEAD = 5; // header + ETX
+constexpr size_t MAX_CMD = 5000;
+constexpr size_t MAX_FRAME = MAX_CMD + FRAME_OVERHEAD; // largest frame we accept or send
 
 // packs a payload to include the header given in the assignment
 // returns an empty string if the payload is to large
