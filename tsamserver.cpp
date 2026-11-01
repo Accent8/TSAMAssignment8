@@ -46,6 +46,7 @@ struct Server {
     std::map<std::string, KnownServer> known;
     Mailbox mailbox;
     int myPort;
+    std::string myIp;
 };
 
 bool parseInt(const std::string& text, int& out) {
@@ -84,9 +85,8 @@ std::string localIP(int fd) {
 }
 
 std::string buildServersList(const Server& s, int fd) {
-    std::string ip = localIP(fd);
     std::string list;
-    list.append(std::string(GROUP_ID) + ',' + ip + "," + std::to_string(s.myPort) + ';');
+    list.append(std::string(GROUP_ID) + ',' + s.myIp + "," + std::to_string(s.myPort) + ';');
     for (const auto& [cfd, c] : s.connections) {
         if (c.role != Role::SERVER) {
             continue;
@@ -264,6 +264,11 @@ int connectToPeer(Server& s, std::string ip, int port) {
         return -1;
     }
 
+    if (s.myIp.empty() || s.myIp == "0.0.0.0") {
+        s.myIp = localIP(fd);
+        log_note("my address is: %s", s.myIp.c_str());
+    }
+
     s.fds.push_back({fd, POLLIN, 0});
     Connection& c = s.connections[fd];
     c.ip = ip;
@@ -332,39 +337,36 @@ bool handleClientConnect(Server&s, int fd, const std::string& args) {
     if (c1 == std::string::npos) {
         return sendTo(s, fd, "ERROR, missing fields");
     }
-    size_t c2 = args.find(',', c1 + 1); // end of to
-    if (c2 == std::string::npos) {
-        return sendTo(s, fd, "ERROR, missing fields");
-    }
     std::string ip = args.substr(0, c1);
     std::string strPort = args.substr(c1 + 1);
     int port;
     if (!parseInt(strPort, port)) {
-        log_note("Bad port in CONNECT");
-        return false;
+        return sendTo(s, fd, "ERROR, bad port");
     }
     if (port < 1 || port > 65535) {
-        log_note("Port number out of range (1-65535)");
-        return false;
+        return sendTo(s, fd, "ERROR, bad port");
+    }
+    if (port == s.myPort && (ip == s.myIp || ip == "127.0.0.1")) {
+        return sendTo(s, fd, "ERROR, cannot connect to myself");
     }
     int connectionCount = 0;
     for (const auto& [cfd, c] : s.connections) {
         if (c.ip == ip && c.listenPort == port) {
             std::string who = c.groupID.empty() ? c.ip + ":" + // Incase the groupID is empty
             std::to_string(c.listenPort) : c.groupID;          // we use IP and Port instead
-            return sendTo(s, fd, "ERROR, already connected to " + c.groupID);
+            return sendTo(s, fd, "ERROR, already connected to " + who);
         }
         if (c.role == Role::SERVER) {
             connectionCount++;
         }
     }
-    if (connectionCount > 8) {
-        return sendTo(s, fd, "Already connected to max nr of servers");
+    if (connectionCount >= 8) {
+        return sendTo(s, fd, "ERROR, already connected to max nr of servers");
     }
     int peerFd = connectToPeer(s, ip, port);
-    if (peerFd == 1) {
+    if (peerFd == -1) {
         return sendTo(s, fd, "ERROR, connect fail");
-    };
+    }
     return sendTo(s, fd, "OK");
 }
 
