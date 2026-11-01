@@ -61,6 +61,19 @@ bool parseInt(const std::string& text, int& out) {
     return true;
 }
 
+bool parseLong(const std::string& text, long& out) {
+    try {
+        size_t used = 0;
+        out = std::stoll(text, &used);
+        if (used != text.size()) {
+            return false;
+        } 
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 std::string localIP(int fd) {
     sockaddr_in local{};
     socklen_t len = sizeof(local);
@@ -127,6 +140,13 @@ int setUpListen(int port) {
 }
 
 bool sendTo(Server& s, int fd, const std::string& payload) {
+    auto it = s.connections.find(fd);
+    if (it == s.connections.end()) {
+        log_note("sendTo: no connection with fd %d", fd);
+        return false;
+    }
+    Connection& c = it->second;
+
     std::string msg = packMsg(payload);
     if (msg.empty()) {
         log_note("Message is too big!");
@@ -134,11 +154,13 @@ bool sendTo(Server& s, int fd, const std::string& payload) {
     }
     bool status = sendMsg(fd, msg);
     if (status) {
-        log_event_bytes("SEND", s.connections[fd].ip.c_str(), s.connections[fd].port, 
-            s.connections[fd].groupID.c_str(), payload.c_str(), payload.length());
+        log_event_bytes("SEND", c.ip.c_str(), c.port, c.groupID.c_str(),
+        payload.c_str(), payload.length());
+        return status;
+    } else {
+        log_note("send to %s:%d failed: %s", c.ip.c_str(), c.port, strerror(errno));
         return status;
     }
-    return status;
 }
 
 void parseServersList(Server& s, int fd, const std::string& args) {
@@ -255,20 +277,35 @@ int connectToPeer(Server& s, std::string ip, int port) {
     return fd;
 }
 
-bool handleClientSendMsg(Server&s, int fd, std::string cmd) {
-    size_t c1 = cmd.find(','); // end of from
+int findPeer(const Server& s, const std::string& groupId) {
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.role == Role::SERVER && c.groupID == groupId) {
+            return cfd;
+        }
+    }
+    return -1;
+}
+
+// Rebuilds the SENDMSG command from a stored message
+std::string toSendMsg(const Message& m) {
+    return "SENDMSG," + m.from + "," + m.to + "," + std::to_string(m.created)
+    + "," + m.text;
+}
+
+bool handleClientSendMsg(Server&s, int fd, const std::string& args) {
+    size_t c1 = args.find(','); // end of from
     if (c1 == std::string::npos) {
         return sendTo(s, fd, "ERROR, missing fields");
     }
-    size_t c2 = cmd.find(',', c1 + 1); // end of to
+    size_t c2 = args.find(',', c1 + 1); // end of to
     if (c2 == std::string::npos) {
         return sendTo(s, fd, "ERROR, missing fields");
     }
     // cut the message up
     // from always ignored, use GROUP_ID instead
-    std::string from = cmd.substr(0, c1); // from the start to first comma
-    std::string to = cmd.substr(c1 + 1, c2 - c1 - 1); // between the commas
-    std::string text = cmd.substr(c2 + 1); // everything else
+    std::string from = args.substr(0, c1); // from the start to first comma
+    std::string to = args.substr(c1 + 1, c2 - c1 - 1); // between the commas
+    std::string text = args.substr(c2 + 1); // everything else
 
     if (to.empty()) {
         return sendTo(s, fd, "ERROR, empty field");
@@ -277,25 +314,106 @@ bool handleClientSendMsg(Server&s, int fd, std::string cmd) {
     std::string out = "SENDMSG," GROUP_ID "," + to + "," + 
     std::to_string(now) + "," + text;
     
-    int peerFD = -1;
-    for (const auto& [cfd, c] : s.connections) {
-        if (c.role == Role::SERVER && c.groupID == to) {
-            peerFD = cfd;
-            break;
-        }
-    }
-        
+    int peerFD = findPeer(s, to);
+
     if (peerFD != -1) {
-        if (!sendTo(s, peerFD, out)) {
-            log_note("Sending to %s failed", to.c_str());
+        if (sendTo(s, peerFD, out)) {
+            return sendTo(s, fd, "OK");
         } 
-    } else {
-        // TODO: fix missing timestamp
-        s.mailbox[to].push_back({GROUP_ID, to, now, text});
-        log_note("no direct connection to %s, holding message", to.c_str());
+        log_note("sending to %s failed, holding instead", to.c_str());
+    } 
+    s.mailbox[to].push_back({GROUP_ID, to, now, text});
+    log_note("no direct connection to %s, holding message", to.c_str());
+    return sendTo(s, fd, "OK");
+}
+
+bool handleServerSendMsg(Server&s, int fd, const std::string& args) {
+    Connection& c = s.connections[fd];
+    size_t c1 = args.find(','); // end of from
+    if (c1 == std::string::npos) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "Missing fields sendMSG");
+        return true;
+    }
+    size_t c2 = args.find(',', c1 + 1); // end of to
+    if (c2 == std::string::npos) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "Missing fields sendMSG");
+        return true;
+    }
+    size_t c3 = args.find(',', c2 + 1); // end of timestamp
+    if (c3 == std::string::npos) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "Missing fields sendMSG");
+        return true;
     }
 
-    return sendTo(s, fd, "OK");
+    std::string from = args.substr(0, c1); // sender
+    std::string to = args.substr(c1 + 1, c2 - c1 - 1); // receiver
+    std::string ts = args.substr(c2 + 1, c3 - c2 - 1); // timestamp
+    std::string text = args.substr(c3 + 1); // text
+
+    if (from.empty() || to.empty()) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "Sender or receiver empty, dropping msg...");
+        return true;
+    }
+    long created;
+    if (!parseLong(ts, created)) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "Invalid timestamp, dropping msg...");
+        return true;
+    }
+
+    if (to == GROUP_ID) {
+        s.mailbox[to].push_back({from, to, created, text});
+        log_note("message for us from: %s", from.c_str());
+        return true;
+    }
+    
+    int peerFD = findPeer(s, to);
+    if (peerFD != -1 && peerFD != fd) {
+        if (sendTo(s, peerFD, "SENDMSG," + args)) {
+            log_note("forwarded message from %s to %s", from.c_str(), to.c_str());
+            return true;
+        }
+        log_note("forwarding to %s failed, holding instead", to.c_str());
+    }
+    // not connected would loop back or sending failed so we hold
+    s.mailbox[to].push_back({from, to, created, text});
+    log_note("holding message from %s for %s", from.c_str(), to.c_str());
+    return true;
+}
+
+// GETMSGS,<group> send every message we hold for group as SENDMSG
+// commands on this connection. only if the connection identified itself
+// as the group may it collect messages
+bool handleServerGetMsgs(Server&s, int fd, const std::string& group) {
+    Connection& c = s.connections[fd];
+    if (group.empty()) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "GETMSGS group empty dropping...");
+        return true;
+    }
+    if (group != c.groupID) {
+        log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), "group ids dont match, dropping...");
+        log_note("%s tried to retrieve messages for %s", c.groupID.c_str(), group.c_str());
+        return true;
+    }
+
+    auto entry = s.mailbox.find(group); // retrive the messages for group
+    if (entry == s.mailbox.end()) {
+        log_note("nothing held for %s", group.c_str());
+        return true;
+    }
+
+    std::deque<Message>& queue = entry->second;
+    int sent = 0;
+    while (!queue.empty()) {
+        if (sendTo(s, fd, toSendMsg(queue.front()))) {
+            queue.pop_front();
+            sent++;
+        } else {
+            return false;
+        }
+    }
+    s.mailbox.erase(entry);
+    log_note("delivered %d held messages to %s", sent, group.c_str());
+    return true;
 }
 
 bool handleClientCommand(Server& s, int fd, std::string& cmd) {
@@ -369,7 +487,12 @@ bool handleServerCommand(Server& s, int fd, std::string& cmd) {
         }
         return true;
     }
-
+    if (name == "SENDMSG") {
+        return handleServerSendMsg(s, fd, args);
+    }
+    if (name == "GETMSGS") {
+        return handleServerGetMsgs(s, fd, args);
+    }
     log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(), ("Unhandled command: " + name).c_str());
     return true;
 }
@@ -421,10 +544,18 @@ bool handleConnection(Server& s, int fd) {
             }
         }
         if (c.role == Role::CLIENT) {
-            if (!handleClientCommand(s, fd, cmd)) return false;
+            if (!handleClientCommand(s, fd, cmd)) {
+                log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(),
+                "send failed");
+                return false;
+            }
         }
         if (c.role == Role::SERVER) {
-            if (!handleServerCommand(s, fd, cmd)) return false;
+            if (!handleServerCommand(s, fd, cmd)) {
+                log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(),
+                "send failed");
+                return false;
+            }
         }
     }
     return true;
