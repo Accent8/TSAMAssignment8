@@ -327,6 +327,47 @@ bool handleClientSendMsg(Server&s, int fd, const std::string& args) {
     return sendTo(s, fd, "OK");
 }
 
+bool handleClientConnect(Server&s, int fd, const std::string& args) {
+    size_t c1 = args.find(","); 
+    if (c1 == std::string::npos) {
+        return sendTo(s, fd, "ERROR, missing fields");
+    }
+    size_t c2 = args.find(',', c1 + 1); // end of to
+    if (c2 == std::string::npos) {
+        return sendTo(s, fd, "ERROR, missing fields");
+    }
+    std::string ip = args.substr(0, c1);
+    std::string strPort = args.substr(c1 + 1);
+    int port;
+    if (!parseInt(strPort, port)) {
+        log_note("Bad port in CONNECT");
+        return false;
+    }
+    if (port < 1 || port > 65535) {
+        log_note("Port number out of range (1-65535)");
+        return false;
+    }
+    int connectionCount = 0;
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.ip == ip && c.listenPort == port) {
+            std::string who = c.groupID.empty() ? c.ip + ":" + // Incase the groupID is empty
+            std::to_string(c.listenPort) : c.groupID;          // we use IP and Port instead
+            return sendTo(s, fd, "ERROR, already connected to " + c.groupID);
+        }
+        if (c.role == Role::SERVER) {
+            connectionCount++;
+        }
+    }
+    if (connectionCount > 8) {
+        return sendTo(s, fd, "Already connected to max nr of servers");
+    }
+    int peerFd = connectToPeer(s, ip, port);
+    if (peerFd == 1) {
+        return sendTo(s, fd, "ERROR, connect fail");
+    };
+    return sendTo(s, fd, "OK");
+}
+
 bool handleServerSendMsg(Server&s, int fd, const std::string& args) {
     Connection& c = s.connections[fd];
     size_t c1 = args.find(','); // end of from
@@ -419,6 +460,9 @@ bool handleServerGetMsgs(Server&s, int fd, const std::string& group) {
 bool handleClientCommand(Server& s, int fd, std::string& cmd) {
     if (cmd.rfind("SENDMSG,", 0) == 0) {
         return handleClientSendMsg(s, fd, cmd.substr(8)); // 8 = strlen("SENDMSG,")
+    }
+    if (cmd.rfind("CONNECT,", 0) == 0) {
+        return handleClientConnect(s, fd, cmd.substr(8)); // 8 = strlen("Connect",)
     }
     std::string response = handleCommand(cmd, s.mailbox);
     if (response.size() + FRAME_OVERHEAD > MAX_FRAME) {
