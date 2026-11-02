@@ -20,19 +20,20 @@
 // then processes every complete frame in the clients buffer
 // Returns false if the client should be closed (disconnect or error)
 // closing is left to runServer, which owns the fd list
-bool handleConnection(Server& s, int fd) {
+bool handleConnection(Server& s, int fd, std::string& reason) {
     Connection& c = s.connections[fd];
     char buff[2048];
     ssize_t n = recv(fd, buff, sizeof(buff), 0); // wont block, poll said its ready
     if (n == 0) {
-        log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(), "disconnected");
+        reason = "disconnected";
         return false;
     }
     if (n < 0) {
         if (errno == EINTR) return true; // interrupted, poll will report and try again
-        log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(), strerror(errno));
+        reason = strerror(errno);
         return false;
     }
+    c.lastSeen = time(NULL);
     
     // TCP is a byte stream, one recv may hold part of a frame or several frames
     // or both, so append to the per client buffer and extract whats complete
@@ -63,21 +64,18 @@ bool handleConnection(Server& s, int fd) {
             } else {
                 log_event("DROP", c.ip.c_str(), c.port, c.groupID.c_str(),
                 "first command was not HELO and connection is not local");
-                log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(),
-                "unidentified remote connection refused");
+                reason = "unidentified remote connection refused";
             }
         }
         if (c.role == Role::CLIENT) {
             if (!handleClientCommand(s, fd, cmd)) {
-                log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(),
-                "send failed");
+                reason = "send failed";
                 return false;
             }
         }
         if (c.role == Role::SERVER) {
             if (!handleServerCommand(s, fd, cmd)) {
-                log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(),
-                "send failed");
+                reason = "send failed";
                 return false;
             }
         }
@@ -110,13 +108,14 @@ void runServer(Server& s, int listenSock) {
                 acceptConnection(s, s.fds[i].fd);
             } else {
                 int fd = s.fds[i].fd;
-                if (!handleConnection(s, fd)) {
-                    close(fd);
-                    s.connections.erase(fd); // erase too, or a refused fd number inherits old bytes
-                    s.fds[i].fd = -1; // mark only: erasing while iterating would skip entries
+                std::string reason;
+                if (!handleConnection(s, fd, reason)) {
+                    closeConnection(s, fd, reason.c_str());
                 }
             }
         }
+        auto newFds = std::remove_if(s.fds.begin(), s.fds.end(), [](const pollfd& p) { return p.fd == -1; });
+        s.fds.erase(newFds, s.fds.end());
         tick(s);
     }
 }
@@ -147,8 +146,7 @@ int main(int argc, char* argv[]){
 
     int listenSock = setUpListen(port);
     if (listenSock < 0) {
-        std::string listenFail = "Failed to listen on " + std::to_string(port);
-        log_note("%s", listenFail.c_str());
+        log_note("failed to listen on %d: %s",port, strerror(errno));
         return 1;
     }
     std::string msg = "listening on port " + std::to_string(port);

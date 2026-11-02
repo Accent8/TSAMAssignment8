@@ -80,8 +80,9 @@ void acceptConnection(Server& s, int listenSock) {
     char ip[INET_ADDRSTRLEN];
     int port = ntohs(addr.sin_port);
     inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+    bool local = (ntohl(addr.sin_addr.s_addr) == INADDR_LOOPBACK);
 
-    if (s.myIp.empty()) {
+    if (s.myIp.empty() && !local) {
         s.myIp = localIP(fd);
         log_note("my address is: %s", s.myIp.c_str());
     }
@@ -93,12 +94,18 @@ void acceptConnection(Server& s, int listenSock) {
     c.ip = ip;
     c.port = port;
     c.role = Role::UNKNOWN;
-    c.isLocal = (ntohl(addr.sin_addr.s_addr) == INADDR_LOOPBACK);
+    c.isLocal = local;
+    c.lastSeen = time(NULL);
     log_event("ACCEPT", ip, port, c.groupID.c_str(), NULL);
 }
 
 int connectToPeer(Server& s, std::string ip, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
+    
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
     if (fd < 0) {
         log_note("Socket fail: %s", strerror(errno));
         return -1;
@@ -134,5 +141,22 @@ int connectToPeer(Server& s, std::string ip, int port) {
     log_event("CONN", ip.c_str(), port, NULL, "Successful connection to peer");
     sendTo(s, fd, "HELO," GROUP_ID);
     c.heloSent = true;
+    c.lastSeen = time(NULL);
     return fd;
+}
+
+void closeConnection(Server& s, int fd, const char* reason) {
+    auto it = s.connections.find(fd);
+    if (it != s.connections.end()) {
+        const Connection& c = it->second;
+        log_event("CLOSE", c.ip.c_str(), c.port, c.groupID.c_str(), reason);
+        s.connections.erase(it);
+    }
+    close(fd);
+    for (pollfd& p: s.fds) {
+        if (p.fd == fd) {
+            p.fd = -1;
+            break;
+        }
+    }
 }

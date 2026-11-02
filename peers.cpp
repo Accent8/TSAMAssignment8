@@ -5,6 +5,9 @@
 #include <string>
 #include <sstream>
 
+constexpr int PEER_TIMEOUT = 300;
+constexpr int KEEPALIVE_INTERVAL = 60;
+
 std::string buildServersList(const Server& s) {
     std::string list;
     list.append(std::string(GROUP_ID) + ',' + s.myIp + "," + std::to_string(s.myPort) + ';');
@@ -56,9 +59,19 @@ void parseServersList(Server& s, int fd, const std::string& args) {
         }
         if (fields[0] == c.groupID) { // is it the sender?
             c.listenPort = port;
-            s.known[fields[0]] = {c.ip, port, c.groupID, time(NULL)};
+            s.known[fields[0]] = {c.ip, port, c.groupID, time(NULL), true};
             log_note("%s listens on port %d", c.groupID.c_str(), port);
             continue;
+        }
+
+        if (!isUsableAddress(fields[1])) {
+            log_note("%s gave an unusable address for %s: %s", c.groupID.c_str(),
+                    fields[0].c_str(), entry.c_str());
+            continue;
+        }
+        auto it = s.known.find(fields[0]);
+        if (it != s.known.end() && it->second.selfReported) {
+            continue; // server told us itself, third party cant override that
         }
 
         if (s.known.count(fields[0]) == 0 && s.known.size() >= 200) {
@@ -66,7 +79,6 @@ void parseServersList(Server& s, int fd, const std::string& args) {
             continue;
         }
 
-        auto it = s.known.find(fields[0]);
         if (it == s.known.end()) {
             log_note("%s says %s is at %s:%d", c.groupID.c_str(), fields[0].c_str(),
             fields[1].c_str(), port);
@@ -74,7 +86,7 @@ void parseServersList(Server& s, int fd, const std::string& args) {
             log_note("%s says %s moved from %s:%d to %s:%d", c.groupID.c_str(), fields[0].c_str(),
              it->second.ip.c_str(), it->second.port, fields[1].c_str(), port);
         }
-        s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL)};
+        s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL), false};
     }
 }
 
@@ -87,10 +99,10 @@ int findPeer(const Server& s, const std::string& groupId) {
     return -1;
 }
 
-static bool sendKeepalives(Server& s, time_t now) {
+static void sendKeepalives(Server& s, time_t now) {
     for (auto& [cfd, c] : s.connections) {
-        if (c.role == Role::SERVER && !c.groupID.empty()) continue;
-        if (now - c.lastKeepalive >= 60) continue;
+        if (c.role != Role::SERVER || c.groupID.empty()) continue;
+        if (now - c.lastKeepalive < KEEPALIVE_INTERVAL) continue;
 
         size_t n = 0;
         auto it = s.mailbox.find(c.groupID);
@@ -103,9 +115,21 @@ static bool sendKeepalives(Server& s, time_t now) {
     }
 }
 
+static void dropSilentPeers(Server& s, time_t now) {
+    std::vector<int> silent;
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.role != Role::SERVER) continue;
+        if (now - c.lastSeen < PEER_TIMEOUT) continue;
+        silent.push_back(cfd);
+    }
+    for (int fd : silent) {
+        closeConnection(s, fd, "no traffic for 5 minutes");
+    }
+}
+
 void tick(Server& s) {
     time_t now = time(NULL);
     sendKeepalives(s, now);
-    // dropSilentPeers(s, now);
+    dropSilentPeers(s, now);
     // maintainPeers(s, now);
 }

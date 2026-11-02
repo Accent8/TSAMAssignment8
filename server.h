@@ -19,6 +19,7 @@ struct Connection {
     int waiting = -1;
     bool isLocal = false;
     time_t lastKeepalive = 0;
+    time_t lastSeen = 0;
 };
 
 struct KnownServer {
@@ -26,6 +27,9 @@ struct KnownServer {
     int port;
     std::string heardFrom; // who told us
     time_t lastSeen;
+    bool selfReported;
+    time_t lastSeen = 0;
+    time_t lastAttempt = 0;
 };
 
 struct Server {
@@ -41,12 +45,14 @@ struct Server {
 bool parseInt(const std::string& text, int& out);
 bool parseLong(const std::string& text, long& out);
 std::string localIP(int fd);
+bool isUsableAddress(const std::string& ip);
 
 // network.cpp
 int setUpListen(int port);
 bool sendTo(Server& s, int fd, const std::string& payload);
 void acceptConnection(Server&s, int listenSock);
 int connectToPeer(Server& s, std::string ip, int port);
+void closeConnection(Server& s, int fd, const char* reason);
 
 // peers.cpp
 std::string buildServersList(const Server& s);
