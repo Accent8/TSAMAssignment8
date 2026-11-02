@@ -16,6 +16,11 @@
 #include "identity.h"
 #include "server.h"
 
+
+// The one address the assignment allows us to hard-code, our entry point
+constexpr const char* BOOTSTRAP_IP = "130.208.246.98";
+constexpr int BOOTSTRAP_PORT = 5001;
+
 // Handles one readable event on a clients socket: receives available bytes
 // then processes every complete frame in the clients buffer
 // Returns false if the client should be closed (disconnect or error)
@@ -121,11 +126,9 @@ void runServer(Server& s, int listenSock) {
 }
 
 int main(int argc, char* argv[]){
-    if (argc != 2 && argc != 4) {
+    if (argc != 2) {
         std::cerr << "incorrect amount of args" << std::endl;
         std::cerr << "Usage: " << argv[0] << " <port>" << std::endl;
-        std::cerr << "OR" << std::endl;
-        std::cerr << argv[0] << "<port> <target ip> <open port on target>" << std::endl;
         return 1;
     }
     int port;
@@ -153,13 +156,9 @@ int main(int argc, char* argv[]){
     log_event("START", NULL, 0, GROUP_ID, msg.c_str());
     Server server;
     server.myPort = port;
-    if (argc == 4) {
-        int peerport;
-        if (!parseInt(argv[3], peerport)) {
-            return 1;
-        }
-        connectToPeer(server, argv[2], peerport);
-    }
+    KnownServer& boot = server.known["bootstrap"];
+    boot.ip = BOOTSTRAP_IP;
+    boot.port = BOOTSTRAP_PORT;
 
     runServer(server, listenSock);
     close(listenSock);

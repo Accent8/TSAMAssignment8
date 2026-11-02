@@ -26,9 +26,8 @@ struct KnownServer {
     std::string ip;
     int port;
     std::string heardFrom; // who told us
-    time_t lastSeen;
-    bool selfReported;
     time_t lastSeen = 0;
+    bool selfReported;
     time_t lastAttempt = 0;
 };
 
@@ -39,7 +38,11 @@ struct Server {
     Mailbox mailbox;
     int myPort = 0;
     std::string myIp;
+    time_t lastMaintain = 0;
 };
+
+constexpr int MIN_PEERS = 3;
+constexpr int MAX_PEERS = 8;
 
 // helpers.cpp
 bool parseInt(const std::string& text, int& out);
@@ -58,6 +61,8 @@ void closeConnection(Server& s, int fd, const char* reason);
 std::string buildServersList(const Server& s);
 void parseServersList(Server& s, int fd, const std::string& args);
 int findPeer(const Server&s, const std::string& groupId);
+bool connectedTo(const Server& s, const std::string& ip, int port);
+int countPeers(const Server& s);
 void tick(Server& s);
 
 // server_cmd.cpp

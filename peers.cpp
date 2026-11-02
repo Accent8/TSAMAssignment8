@@ -7,6 +7,8 @@
 
 constexpr int PEER_TIMEOUT = 300;
 constexpr int KEEPALIVE_INTERVAL = 60;
+constexpr int MAINTAIN_INTERVAL = 30;
+constexpr int RETRY_DELAY = 300;
 
 std::string buildServersList(const Server& s) {
     std::string list;
@@ -59,7 +61,12 @@ void parseServersList(Server& s, int fd, const std::string& args) {
         }
         if (fields[0] == c.groupID) { // is it the sender?
             c.listenPort = port;
-            s.known[fields[0]] = {c.ip, port, c.groupID, time(NULL), true};
+            KnownServer& k = s.known[fields[0]];
+            k.ip = c.ip; // the address we actually see it on
+            k.port = port;
+            k.heardFrom = c.groupID;
+            k.lastSeen = time(NULL);
+            k.selfReported = true; // it told us itself
             log_note("%s listens on port %d", c.groupID.c_str(), port);
             continue;
         }
@@ -86,17 +93,40 @@ void parseServersList(Server& s, int fd, const std::string& args) {
             log_note("%s says %s moved from %s:%d to %s:%d", c.groupID.c_str(), fields[0].c_str(),
              it->second.ip.c_str(), it->second.port, fields[1].c_str(), port);
         }
-        s.known[fields[0]] = {fields[1], port, c.groupID, time(NULL), false};
+        KnownServer& k = s.known[fields[0]];
+        k.ip = fields[1]; // the address the sender claims for it
+        k.port = port;
+        k.heardFrom = c.groupID;
+        k.lastSeen = time(NULL);
+        k.selfReported = false;
     }
 }
 
 int findPeer(const Server& s, const std::string& groupId) {
+    bool connectedToAddress = false;
     for (const auto& [cfd, c] : s.connections) {
         if (c.role == Role::SERVER && c.groupID == groupId) {
             return cfd;
         }
     }
     return -1;
+}
+
+bool connectedTo(const Server& s, const std::string& ip, int port) {
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.role == Role::SERVER && c.ip == ip && c.listenPort == port) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int countPeers(const Server& s) {
+    int n = 0;
+    for (const auto& [cfd, c] : s.connections) {
+        if (c.role == Role::SERVER) n++;
+    }
+    return n;
 }
 
 static void sendKeepalives(Server& s, time_t now) {
@@ -127,9 +157,37 @@ static void dropSilentPeers(Server& s, time_t now) {
     }
 }
 
+static void maintainPeers(Server&s, time_t now) {
+    if (now - s.lastMaintain < MAINTAIN_INTERVAL) return;
+    s.lastMaintain = now;
+
+    int peers = countPeers(s);
+    if (peers >= MIN_PEERS) return;
+
+    std::string best;
+    for (auto& [name, k] : s.known) {
+        if (name == GROUP_ID) continue;
+        if (findPeer(s, name) != -1) continue; // connected under this name
+        if (connectedTo(s, k.ip, k.port)) continue; // connected to this addr, maybe under another name
+        if (now - k.lastAttempt < RETRY_DELAY) continue;
+        if (!isUsableAddress(k.ip)) continue;
+        if (name.rfind("G_", 0) == 0) {
+            best = name;
+            break;
+        }
+        best = name;
+    }
+    if (best.empty()) return;
+    KnownServer& k = s.known[best];
+    k.lastAttempt = now;
+    log_note("only %d peers, connecting to %s at %s:%d", peers, best.c_str(),
+            k.ip.c_str(), k.port);
+    connectToPeer(s, k.ip, k.port);
+}
+
 void tick(Server& s) {
     time_t now = time(NULL);
     sendKeepalives(s, now);
     dropSilentPeers(s, now);
-    // maintainPeers(s, now);
+    maintainPeers(s, now);
 }

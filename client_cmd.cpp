@@ -61,18 +61,14 @@ bool handleClientConnect(Server&s, int fd, const std::string& args) {
     if (port == s.myPort && (ip == s.myIp)) {
         return sendTo(s, fd, "ERROR, cannot connect to myself");
     }
-    int connectionCount = 0;
     for (const auto& [cfd, c] : s.connections) {
         if (c.ip == ip && c.listenPort == port) {
             std::string who = c.groupID.empty() ? c.ip + ":" + // Incase the groupID is empty
             std::to_string(c.listenPort) : c.groupID;          // we use IP and Port instead
             return sendTo(s, fd, "ERROR, already connected to " + who);
         }
-        if (c.role == Role::SERVER) {
-            connectionCount++;
-        }
     }
-    if (connectionCount >= 8) {
+    if (countPeers(s) >= MAX_PEERS) {
         return sendTo(s, fd, "ERROR, already connected to max nr of servers");
     }
     int peerFd = connectToPeer(s, ip, port);
