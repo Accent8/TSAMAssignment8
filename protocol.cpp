@@ -96,10 +96,3 @@ bool unpackMsg(std::string& buf, std::string& out, size_t* discarded) {
         return true;
     }
 }
-
-std::string timestamp(){
-    time_t curr= time(nullptr);
-    char buf[32];
-    strftime(buf, sizeof buf, "%d.%m.%Y - %H:%M:%S", localtime(&curr));
-    return buf;
-}

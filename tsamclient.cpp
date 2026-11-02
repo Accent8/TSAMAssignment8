@@ -60,7 +60,7 @@ bool sendCommand(int sock, std::string line){
         return false;
     }
 
-    printf("[%s] sent: %s\n", timestamp().c_str(), line.c_str()); //std::cout << "[" << timestamp() << "] SENT: " << line << std::endl;
+    printf("sent: %s\n", line.c_str()); //std::cout << "[" << timestamp() << "] SENT: " << line << std::endl;
     fflush(stdout); //makes sure the line is written out right away
     return true;
 
@@ -115,7 +115,7 @@ bool serverData(int sock, std::string &responsBuffer){
     // in the responsBuffer and prints every complete frame
     std::string respons;
     while(unpackMsg(responsBuffer, respons)){
-        printf("[%s] response: %s\n", timestamp().c_str(), respons.c_str());
+        printf("response: %s\n", respons.c_str());
     }
     fflush(stdout);
     return true;

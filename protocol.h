@@ -23,6 +23,3 @@ bool sendMsg(int fd, const std::string& data);
 // Returns false if more data is needed. malformed bytes are discarded
 // if discarded, the number of discarded bytes is added to it
 bool unpackMsg(std::string& buf, std::string& out, size_t* discarded = nullptr);
-
-// Current local time as "DD.MM.YYYY - HH:MM:SS" 
-std::string timestamp();
