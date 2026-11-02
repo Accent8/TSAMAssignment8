@@ -16,7 +16,6 @@
 #include "identity.h"
 #include "server.h"
 
-
 // The one address the assignment allows us to hard-code, our entry point
 constexpr const char* BOOTSTRAP_IP = "130.208.246.98";
 constexpr int BOOTSTRAP_PORT = 5001;

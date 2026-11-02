@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+// Validates an int from a string, used for port numbers
 bool parseInt(const std::string& text, int& out) {
     try {
         size_t used = 0;
@@ -17,6 +18,7 @@ bool parseInt(const std::string& text, int& out) {
     return true;
 }
 
+// Validates longs from string, used for timestamps
 bool parseLong(const std::string& text, long& out) {
     try {
         size_t used = 0;
@@ -30,6 +32,7 @@ bool parseLong(const std::string& text, long& out) {
     return true;
 }
 
+// Returns our local IP addr
 std::string localIP(int fd) {
     sockaddr_in local{};
     socklen_t len = sizeof(local);

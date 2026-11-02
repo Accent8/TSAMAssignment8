@@ -10,6 +10,7 @@ std::string toSendMsg(const Message& m) {
     + "," + m.text;
 }
 
+// Delivers all held messages we have for the given group
 bool deliverHeld(Server& s, int fd, const std::string& group) {
     auto entry = s.mailbox.find(group); // retrive the messages for group
     if (entry == s.mailbox.end()) {
@@ -31,6 +32,7 @@ bool deliverHeld(Server& s, int fd, const std::string& group) {
     return true;
 }
 
+// Handles server sending messages
 bool handleServerSendMsg(Server& s, int fd, const std::string& args) {
     Connection& c = s.connections[fd];
     size_t c1 = args.find(','); // end of from
@@ -102,6 +104,7 @@ bool handleServerGetMsgs(Server& s, int fd, const std::string& group) {
     return deliverHeld(s, fd, group);
 }
 
+// Handles STATUSRESP for our server
 bool handleServerStatusResp(Server& s, int fd,  const std::string& args) {
     Connection& c = s.connections[fd];
     if (args == "EMPTY") {
@@ -141,6 +144,7 @@ bool handleServerStatusResp(Server& s, int fd,  const std::string& args) {
     return true;
 }
 
+// Handles commands send to our server
 bool handleServerCommand(Server& s, int fd, const std::string& cmd) {
     Connection& c = s.connections[fd];
     size_t comma = cmd.find(',');

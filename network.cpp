@@ -43,6 +43,7 @@ int setUpListen(int port) {
     return listenSock;
 }
 
+// Sends messages to other servers
 bool sendTo(Server& s, int fd, const std::string& payload) {
     auto it = s.connections.find(fd);
     if (it == s.connections.end()) {
@@ -66,6 +67,7 @@ bool sendTo(Server& s, int fd, const std::string& payload) {
         return status;
     }
 }
+
 // Accepts one pending connection, starts polling it and registers it in clients
 // a failed accept is logged but does not stop the server.
 void acceptConnection(Server& s, int listenSock) {
@@ -99,6 +101,8 @@ void acceptConnection(Server& s, int listenSock) {
     log_event("ACCEPT", ip, port, c.groupID.c_str(), NULL);
 }
 
+// Connects to a peer at the given IP and port
+// Logs any errors it runs into
 int connectToPeer(Server& s, std::string ip, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     
@@ -145,6 +149,7 @@ int connectToPeer(Server& s, std::string ip, int port) {
     return fd;
 }
 
+// Closes a connection and logs it with the given reason
 void closeConnection(Server& s, int fd, const char* reason) {
     auto it = s.connections.find(fd);
     if (it != s.connections.end()) {

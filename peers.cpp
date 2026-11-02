@@ -10,6 +10,7 @@ constexpr int KEEPALIVE_INTERVAL = 60;
 constexpr int MAINTAIN_INTERVAL = 30;
 constexpr int RETRY_DELAY = 300;
 
+// Builds a list of connected peers
 std::string buildServersList(const Server& s) {
     std::string list;
     list.append(std::string(GROUP_ID) + ',' + s.myIp + "," + std::to_string(s.myPort) + ';');
@@ -29,6 +30,8 @@ std::string buildServersList(const Server& s) {
     return list;
 }
 
+// Creates a list of servers we are connected to
+// Logging any errors we run into
 void parseServersList(Server& s, int fd, const std::string& args) {
     Connection& c = s.connections[fd];
 
@@ -102,8 +105,9 @@ void parseServersList(Server& s, int fd, const std::string& args) {
     }
 }
 
+// Finds a peer in our connection list
+// returns -1 if no peer is found with the given groupID
 int findPeer(const Server& s, const std::string& groupId) {
-    bool connectedToAddress = false;
     for (const auto& [cfd, c] : s.connections) {
         if (c.role == Role::SERVER && c.groupID == groupId) {
             return cfd;
@@ -112,6 +116,7 @@ int findPeer(const Server& s, const std::string& groupId) {
     return -1;
 }
 
+// Checks to see if we are connected to a server at the given IP and port
 bool connectedTo(const Server& s, const std::string& ip, int port) {
     for (const auto& [cfd, c] : s.connections) {
         if (c.role == Role::SERVER && c.ip == ip && c.listenPort == port) {
@@ -121,6 +126,7 @@ bool connectedTo(const Server& s, const std::string& ip, int port) {
     return false;
 }
 
+// Counts how many peers we have that are listed as servers
 int countPeers(const Server& s) {
     int n = 0;
     for (const auto& [cfd, c] : s.connections) {
@@ -129,6 +135,7 @@ int countPeers(const Server& s) {
     return n;
 }
 
+// Sends `KEEPALIVE,n` every 60 seconds to all connected peers
 static void sendKeepalives(Server& s, time_t now) {
     for (auto& [cfd, c] : s.connections) {
         if (c.role != Role::SERVER || c.groupID.empty()) continue;
@@ -145,6 +152,7 @@ static void sendKeepalives(Server& s, time_t now) {
     }
 }
 
+// Drops peers that have been silent for 5 mins
 static void dropSilentPeers(Server& s, time_t now) {
     std::vector<int> silent;
     for (const auto& [cfd, c] : s.connections) {
@@ -157,6 +165,8 @@ static void dropSilentPeers(Server& s, time_t now) {
     }
 }
 
+// Checks every 30 seconds if we have atleast 3 connected peers
+// If not find a suitable peer in our known servers list
 static void maintainPeers(Server&s, time_t now) {
     if (now - s.lastMaintain < MAINTAIN_INTERVAL) return;
     s.lastMaintain = now;

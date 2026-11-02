@@ -4,6 +4,8 @@
 #include "protocol.h"
 #include <string>
 
+// Handles the "SENDMSG," command
+// args contains from (GROUP_ID replaces), to and the message
 bool handleClientSendMsg(Server& s, int fd, const std::string& args) {
     size_t c1 = args.find(','); // end of from
     if (c1 == std::string::npos) {
@@ -44,6 +46,8 @@ bool handleClientSendMsg(Server& s, int fd, const std::string& args) {
     return sendTo(s, fd, "OK");
 }
 
+// Handles the "CONNECT," command
+// args is the ip and port number sent
 bool handleClientConnect(Server&s, int fd, const std::string& args) {
     size_t c1 = args.find(","); 
     if (c1 == std::string::npos) {
@@ -78,6 +82,7 @@ bool handleClientConnect(Server&s, int fd, const std::string& args) {
     return sendTo(s, fd, "OK");
 }
 
+// Handles commands the client sents to the server
 bool handleClientCommand(Server& s, int fd, const std::string& cmd) {
     if (cmd.rfind("SENDMSG,", 0) == 0) {
         return handleClientSendMsg(s, fd, cmd.substr(8)); // 8 = strlen("SENDMSG,")
