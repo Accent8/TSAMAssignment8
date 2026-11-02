@@ -90,7 +90,7 @@ void runServer(Server& s, int listenSock) {
     s.fds.push_back({listenSock, POLLIN, 0}); // index 0: listener
 
     while (true) {
-        int ready = poll(s.fds.data(), s.fds.size(), -1); // block until something happens
+        int ready = poll(s.fds.data(), s.fds.size(), 1000);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue; // interrupted by a signal, not an error
@@ -117,9 +117,7 @@ void runServer(Server& s, int listenSock) {
                 }
             }
         }
-        // Remove the entries marked above, after the loop finishes running
-        auto newFds = std::remove_if(s.fds.begin(), s.fds.end(), [](const pollfd& p) {return p.fd == -1;});
-        s.fds.erase(newFds, s.fds.end());
+        tick(s);
     }
 }
 

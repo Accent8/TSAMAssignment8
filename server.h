@@ -18,6 +18,7 @@ struct Connection {
     bool heloSent = false; // so we never send HELO twice
     int waiting = -1;
     bool isLocal = false;
+    time_t lastKeepalive = 0;
 };
 
 struct KnownServer {
@@ -51,6 +52,7 @@ int connectToPeer(Server& s, std::string ip, int port);
 std::string buildServersList(const Server& s);
 void parseServersList(Server& s, int fd, const std::string& args);
 int findPeer(const Server&s, const std::string& groupId);
+void tick(Server& s);
 
 // server_cmd.cpp
 std::string toSendMsg(const Message& m);

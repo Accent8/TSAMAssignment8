@@ -78,7 +78,6 @@ void parseServersList(Server& s, int fd, const std::string& args) {
     }
 }
 
-
 int findPeer(const Server& s, const std::string& groupId) {
     for (const auto& [cfd, c] : s.connections) {
         if (c.role == Role::SERVER && c.groupID == groupId) {
@@ -86,4 +85,27 @@ int findPeer(const Server& s, const std::string& groupId) {
         }
     }
     return -1;
+}
+
+static bool sendKeepalives(Server& s, time_t now) {
+    for (auto& [cfd, c] : s.connections) {
+        if (c.role == Role::SERVER && !c.groupID.empty()) continue;
+        if (now - c.lastKeepalive >= 60) continue;
+
+        size_t n = 0;
+        auto it = s.mailbox.find(c.groupID);
+        if (it != s.mailbox.end()) {
+            n = it->second.size();
+        }
+
+        c.lastKeepalive = now;
+        sendTo(s, cfd, "KEEPALIVE," + std::to_string(n));
+    }
+}
+
+void tick(Server& s) {
+    time_t now = time(NULL);
+    sendKeepalives(s, now);
+    // dropSilentPeers(s, now);
+    // maintainPeers(s, now);
 }
