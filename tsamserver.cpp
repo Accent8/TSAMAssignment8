@@ -1,12 +1,9 @@
 #include <iostream>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <cerrno>
-#include <poll.h>
 #include <vector>
 #include <algorithm>
 #include <map>
@@ -18,8 +15,6 @@
 #include "log_event.h"
 #include "identity.h"
 #include "server.h"
-#include <ctime>
-#include <sstream>
 
 // Handles one readable event on a clients socket: receives available bytes
 // then processes every complete frame in the clients buffer
