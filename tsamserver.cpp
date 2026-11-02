@@ -231,6 +231,11 @@ void acceptConnection(Server& s, int listenSock) {
     char ip[INET_ADDRSTRLEN];
     int port = ntohs(addr.sin_port);
     inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+
+    if (s.myIp.empty()) {
+        s.myIp = localIP(fd);
+        log_note("my address is: %s", s.myIp.c_str());
+    }
     
     // revents starts at 0, so if this push happens during runServers loop
     // the new entry is skipped this round and picked up next poll()
@@ -264,7 +269,7 @@ int connectToPeer(Server& s, std::string ip, int port) {
         return -1;
     }
 
-    if (s.myIp.empty() || s.myIp == "0.0.0.0") {
+    if (s.myIp.empty()) {
         s.myIp = localIP(fd);
         log_note("my address is: %s", s.myIp.c_str());
     }
@@ -291,6 +296,13 @@ int findPeer(const Server& s, const std::string& groupId) {
     return -1;
 }
 
+
+// Rebuilds the SENDMSG command from a stored message
+std::string toSendMsg(const Message& m) {
+    return "SENDMSG," + m.from + "," + m.to + "," + std::to_string(m.created)
+    + "," + m.text;
+}
+
 bool deliverHeld(Server&s, int fd, const std::string& group) {
     auto entry = s.mailbox.find(group); // retrive the messages for group
     if (entry == s.mailbox.end()) {
@@ -311,12 +323,6 @@ bool deliverHeld(Server&s, int fd, const std::string& group) {
     s.mailbox.erase(entry);
     log_note("delivered %d held messages to %s", sent, group.c_str());
     return true;
-}
-
-// Rebuilds the SENDMSG command from a stored message
-std::string toSendMsg(const Message& m) {
-    return "SENDMSG," + m.from + "," + m.to + "," + std::to_string(m.created)
-    + "," + m.text;
 }
 
 bool handleClientSendMsg(Server&s, int fd, const std::string& args) {
@@ -368,7 +374,7 @@ bool handleClientConnect(Server&s, int fd, const std::string& args) {
     if (port < 1 || port > 65535) {
         return sendTo(s, fd, "ERROR, bad port");
     }
-    if (port == s.myPort && (ip == s.myIp || ip == "127.0.0.1")) {
+    if (port == s.myPort && (ip == s.myIp)) {
         return sendTo(s, fd, "ERROR, cannot connect to myself");
     }
     int connectionCount = 0;
